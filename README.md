@@ -10,7 +10,7 @@ Just simply git clone this project or download it.
 
 First, compile `main.cpp` with
 ```
-g++ main.cpp -o dynfrs -std=c++17 -O3
+g++ main_serializada.cpp -o dynfrs -std=c++17 -O3
 ```
 Then, execute `dynfrs` with the following flags:
 

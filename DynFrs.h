@@ -1,4 +1,3 @@
-
 // #include <bits/stdc++.h>
 // #include <omp.h>
 #include <algorithm>
@@ -9,6 +8,9 @@
 #include <vector>
 #include <random>
 #include <cassert>
+#include <fstream>
+#include <cmath>
+#include <iomanip>
 
 using namespace std;
 using namespace std::chrono;
@@ -82,6 +84,7 @@ public:
 		
 		class attribute {
 		public:
+			// Não é necessário serializar a classe attribute pois é reconstruida automaticamente ao restaurar a árvore
 		
 			decision_tree &DT;
 
@@ -123,7 +126,7 @@ public:
 			}
 			
 			int get_next() {
-				uniform_int_distribution rnd(0, d - 1);
+				std::uniform_int_distribution<int> rnd(0, d - 1);
 				int id = -1;
 				
 				for (int trial = 0; trial < p_count; ++trial) {
@@ -379,6 +382,10 @@ public:
 			pair<Tx, int> spl = {0, -1};
 			Tx thres;
 			int attr;
+			
+			// delay = 0: Nó normal, já construído
+			// delay = 1: Nó precisa ser construído completamente (build())
+			// delay = 2: Nó precisa apenas separar dados e construir filhos (separate() + build() nos filhos)
 			int delay;
 			
 			int dep;
@@ -386,11 +393,100 @@ public:
 			
 			bool old = 0;
 			
-			node(const random_forest &RF, decision_tree &DT, int dep):
-				RF(RF), DT(DT), dep(dep), delay(1), A(DT, RF.d), ls(nullptr), rs(nullptr) {
+			node(const random_forest &RF, decision_tree &DT, int dep) : 
+				RF(RF), DT(DT), A(DT, RF.d), dep(dep) {
+				ls = rs = nullptr;
+				thres = 0.0;        
+				attr = 0;           
+				delay = 1;          
+				spl = {0.0, 0};     
+				old = 0;            
 			}
+			
 			node(const random_forest &RF, decision_tree &DT, int dep, const vector<bool> &cons):
-				RF(RF), DT(DT), dep(dep), delay(1), A(DT, RF.d, cons), ls(nullptr), rs(nullptr) {
+				RF(RF), DT(DT), A(DT, RF.d, cons), dep(dep) {
+				ls = nullptr;       
+				rs = nullptr;       
+				thres = 0.0;        
+				attr = 0;           
+				delay = 1;          
+				spl = {0.0, 0};     
+				old = 0;            
+			}
+
+			void serialize(std::ostream &out) const {
+				out.write((char*)&dep, sizeof(dep));
+				
+				uint32_t xid_size = static_cast<uint32_t>(Xid.size());
+				out.write((char*)&xid_size, sizeof(xid_size));
+				
+				if (xid_size > 0) {
+					out.write((char*)Xid.data(), xid_size * sizeof(int));
+				}
+				
+				double safe_thres = std::isnan(thres) ? 0.0 : thres;
+				int safe_attr = (attr >= 0 && attr < 10000) ? attr : 0;
+				int safe_delay = delay;
+				double safe_spl_first = std::isnan(spl.first) ? 0.0 : spl.first;
+				int safe_spl_second = (spl.second >= -1 && spl.second < 10000) ? spl.second : -1;
+				bool safe_old = old;
+				
+				out.write((char*)&safe_thres, sizeof(safe_thres));
+				out.write((char*)&safe_attr, sizeof(safe_attr));
+				out.write((char*)&safe_delay, sizeof(safe_delay));
+				out.write((char*)&safe_spl_first, sizeof(safe_spl_first));
+				out.write((char*)&safe_spl_second, sizeof(safe_spl_second));
+				out.write((char*)&safe_old, sizeof(safe_old));
+				
+				// Serializar A.n e A.n_1 explicitamente
+				out.write((char*)&A.n, sizeof(A.n));
+				out.write((char*)&A.n_1, sizeof(A.n_1));
+				
+				bool has_ls = (ls != nullptr);
+				bool has_rs = (rs != nullptr);
+				out.write((char*)&has_ls, sizeof(has_ls));
+				out.write((char*)&has_rs, sizeof(has_rs));
+				if (has_ls) ls->serialize(out);
+				if (has_rs) rs->serialize(out);
+			}
+
+			static node* deserialize(std::istream &in, decision_tree &DT, const random_forest &RF) {
+				int dep_local;
+				in.read((char*)&dep_local, sizeof(dep_local));
+				
+				uint32_t xid_size;
+				in.read((char*)&xid_size, sizeof(xid_size));
+				
+				const uint32_t MAX_REASONABLE_SIZE = 100000;
+				if (xid_size > MAX_REASONABLE_SIZE) {
+					throw std::length_error("Tamanho inválido para Xid");
+				}
+				
+				node* n = new node(RF, DT, dep_local);
+				
+				if (xid_size > 0) {
+					n->Xid.resize(xid_size);
+					in.read((char*)n->Xid.data(), xid_size * sizeof(int));
+				}
+				
+				in.read((char*)&n->thres, sizeof(n->thres));
+				in.read((char*)&n->attr, sizeof(n->attr));
+				in.read((char*)&n->delay, sizeof(n->delay));
+				in.read((char*)&n->spl.first, sizeof(n->spl.first));
+				in.read((char*)&n->spl.second, sizeof(n->spl.second));
+				in.read((char*)&n->old, sizeof(n->old));
+
+				// Deserializar A.n e A.n_1 explicitamente
+				in.read((char*)&n->A.n, sizeof(n->A.n));
+				in.read((char*)&n->A.n_1, sizeof(n->A.n_1));
+				
+				bool has_ls = false, has_rs = false;
+				in.read((char*)&has_ls, sizeof(has_ls));
+				in.read((char*)&has_rs, sizeof(has_rs));
+				if (has_ls) n->ls = node::deserialize(in, DT, RF);
+				if (has_rs) n->rs = node::deserialize(in, DT, RF);
+				
+				return n;
 			}
 			
 			void gen_spl(int trials) {
@@ -400,8 +496,6 @@ public:
 				pair<Ts, Tx> best;
 				for (; A.used_count < trials;) {
 					int p = A.get_next();
-					
-					// cerr << A.used_count << ' ' << p << endl;
 					
 					if (p == -1) break;
 					
@@ -418,7 +512,6 @@ public:
 						
 						constant = cnt_1 == 0 || cnt_1 == Xid.size();
 						if (constant) {
-							// cerr << "cons" << endl;
 							A.set_as(p, 2);
 							continue;
 						}
@@ -438,7 +531,6 @@ public:
 						}
 						
 						if (constant) {
-							// cerr << "cons" << endl;
 							A.set_as(p, 2);
 							continue;
 						}
@@ -447,7 +539,6 @@ public:
 						A.gen(p, p_tries, a_size, DT.a);
 					}
 				}
-				
 				
 				if (f) Xid.erase(Xid.begin(), Xid.end());
 			}
@@ -475,11 +566,12 @@ public:
 					u->dep = dep + 1;
 					u->A.reset();
 					u->A.cons = A.cons;
-					u->spl = {0, -1};
+					u->spl = {0.0, -1};
+					u->thres = 0.0;
+					u->attr = 0;
 					u->delay = 1;
-					u->ls = u->rs = nullptr;
-					
 					u->old = 1;
+					u->ls = u->rs = nullptr;
 				}
 				return u;
 			}
@@ -487,11 +579,26 @@ public:
 			void separate() {
 				ls = new_child();
 				rs = new_child();
-				
 				thres = spl.first, attr = spl.second;
 				
-				ls->Xid.reserve(Xid.size());
-				rs->Xid.reserve(Xid.size());
+				// Proteção contra tamanhos inválidos
+				if (Xid.size() > 1000000) {
+					std::cerr << "ERRO CRÍTICO: Xid muito grande em separate(): " << Xid.size() << std::endl;
+					throw std::length_error("Xid corrompido em separate()");
+				}
+				
+				// Use capacidade limitada para reserve
+				size_t safe_size = std::min(Xid.size(), static_cast<size_t>(100000));
+				
+				try {
+					if (safe_size > 0) {
+						ls->Xid.reserve(safe_size);
+						rs->Xid.reserve(safe_size);
+					}
+				} catch (const std::exception& e) {
+					std::cerr << "ERRO no reserve - Xid.size(): " << Xid.size() << ", safe_size: " << safe_size << std::endl;
+					throw;
+				}
 				
 				for (int id : Xid) {
 					const auto &X = RF.X[id][attr];
@@ -507,7 +614,6 @@ public:
 				ls->A.n = ls->Xid.size();
 				rs->A.n = rs->Xid.size();
 				rs->A.n_1 = A.n_1 - cnt;
-				
 				Xid.clear();
 				Xid.shrink_to_fit();
 			}
@@ -529,7 +635,35 @@ public:
 			
 			void concentrate() {
 				if (ls == nullptr) return;
-				Xid.reserve(A.n);
+				
+				A.n = static_cast<int>(Xid.size());
+				if (A.n < 0) {
+					A.n = 0;
+				}
+				
+				A.n_1 = 0;
+				if (A.n > 0) {
+					for (int id : Xid) {
+						if (id >= 0 && id < RF.Y.size() && RF.Y[id]) {
+							A.n_1++;
+						}
+					}
+				}
+				
+				if (A.n > 1000000) {
+					std::cerr << "ERRO: A.n muito grande em concentrate(): " << A.n << std::endl;
+					A.n = 0;
+					return;
+				}
+				
+				if (A.n > 0) {
+					try {
+						Xid.reserve(A.n);
+					} catch (const std::exception& e) {
+						std::cerr << "ERRO no reserve em concentrate() - A.n: " << A.n << std::endl;
+					}
+				}
+				
 				concentrate(Xid);
 				ls = rs = nullptr;
 			}
@@ -547,7 +681,25 @@ public:
 			
 			void collect() {
 				if (ls == nullptr) return;
-				Xid.reserve(A.n);
+				
+				if (A.n < 0) {
+					A.n = static_cast<int>(Xid.size());
+					if (A.n < 0) A.n = 0;
+				}
+				
+				if (A.n > 1000000) {
+					A.n = static_cast<int>(Xid.size());
+					if (A.n > 1000000) A.n = 0;
+				}
+				
+				if (A.n > 0) {
+					try {
+						Xid.reserve(A.n);
+					} catch (const std::exception& e) {
+						// Continue sem reservar em caso de erro
+					}
+				}
+				
 				collect(Xid);
 			}
 			void collect(vector<int> &Xids) {
@@ -563,7 +715,10 @@ public:
 				if (delay) {
 					if (split()) separate();
 				}
-				if (ls == nullptr) return (double) A.n_1 / A.n;
+				if (ls == nullptr) {
+					if (A.n <= 0) return 0.0;
+					return (double) A.n_1 / A.n;
+				}
 				return (X[attr] <= thres) ? ls->qry(X) : rs->qry(X);
 			}
 
@@ -601,7 +756,6 @@ public:
 				} else if (best_split_changed()) {
 					concentrate();
 					if (dly) delay = 2;
-					else build();
 				} else if (ls != nullptr) {
 					(RF.X[id][attr] <= thres) ? ls->del(id) : rs->del(id);
 				}
@@ -687,17 +841,10 @@ public:
 					if (!ids_r.empty()) rs->del(ids_r);
 				}
 			}
-
 			
 			bool best_split_changed() {
-				// cerr << "see if best changed" << endl;
 				pair<Tx, int> best = A.find_best_spl();
-				// cerr << dep << ": " << best.first << ' ' << best.second << " <- " << this->spl.first << ' ' << this->spl.second << endl;
-				// cerr << calc(best) << ' ' << calc(this->spl) << endl;
-//				cerr << "best is found!" << ' ' << (this->spl != best) << endl;
 				bool f = this->spl != best;
-				// cerr << f << endl;
-				// if (f) cerr << dep << ": " << best.first << ' ' << best.second << " <- " << this->spl.first << ' ' << this->spl.second << endl;
 				this->spl = best;
 				return f;
 			}
@@ -707,6 +854,92 @@ public:
 			}
 		};
 		node *root;
+
+		void serialize(std::ostream &out) const {
+			out.write((char*)&max_dep, sizeof(max_dep));
+			out.write((char*)&min_split_size, sizeof(min_split_size));
+			
+			if (root) {
+				root->serialize(out);
+			}
+		}
+
+		static decision_tree* deserialize(std::istream &in, const random_forest &RF) {
+			int max_dep_local, min_split_size_local;
+			in.read((char*)&max_dep_local, sizeof(max_dep_local));
+			in.read((char*)&min_split_size_local, sizeof(min_split_size_local));
+			vector<int> fake_vec;
+			decision_tree* t = new decision_tree(RF, fake_vec, max_dep_local, min_split_size_local);
+			t->root = node::deserialize(in, *t, RF);
+			return t;
+		}
+
+		// Função para imprimir a estrutura da árvore
+		void print_tree(const std::string &prefix = "") const {
+			if (root) {
+				cout << prefix << "Decision Tree (max_dep=" << max_dep << ", min_split=" << min_split_size << "):" << endl;
+				print_node_compact(root, prefix + "  ", 0);
+			} else {
+				cout << prefix << "Empty tree" << endl;
+			}
+		}
+
+		void print_node_compact(node* n, const std::string &prefix, int depth, int max_depth = 4) const {
+			if (!n || depth > max_depth) {
+				if (depth > max_depth) cout << prefix << "... (truncated)" << endl;
+				return;
+			}
+			
+			string node_type = n->leaf() ? "LEAF" : "NODE";
+			cout << prefix << node_type << " [d=" << n->dep << ", n=" << n->A.n << ", n1=" << n->A.n_1;
+			
+			if (!n->leaf()) {
+				cout << "] split: attr=" << n->attr << ", thres=" << std::fixed << std::setprecision(3) << n->thres;
+				cout << " (parent nodes have n=0 by design after split)";
+			} else {
+				double prob = (n->A.n > 0) ? (double)n->A.n_1 / n->A.n : 0.0;
+				cout << "] pred=" << std::fixed << std::setprecision(3) << prob;
+			}
+			cout << endl;
+			
+			if (n->ls || n->rs) {
+				if (n->ls) {
+					cout << prefix << "├─L: ";
+					print_node_compact(n->ls, prefix + "│    ", depth + 1, max_depth);
+				}
+				if (n->rs) {
+					cout << prefix << "└─R: ";
+					print_node_compact(n->rs, prefix + "     ", depth + 1, max_depth);
+				}
+			}
+		}
+
+		void print_node(node* n, const std::string &prefix, bool is_root = false) const {
+			if (!n) return;
+			
+			string node_type = n->leaf() ? "LEAF" : "NODE";
+			cout << prefix << node_type << " [dep=" << n->dep << ", samples=" << n->A.n 
+				 << ", class1=" << n->A.n_1 << ", delay=" << n->delay << "]";
+			
+			if (!n->leaf()) {
+				cout << " split: attr=" << n->attr << ", thres=" << n->thres;
+			} else {
+				double prob = (n->A.n > 0) ? (double)n->A.n_1 / n->A.n : 0.0;
+				cout << " prediction=" << prob;
+			}
+			cout << endl;
+			
+			if (n->ls || n->rs) {
+				if (n->ls) {
+					cout << prefix << "├─L: ";
+					print_node(n->ls, prefix + "│    ");
+				}
+				if (n->rs) {
+					cout << prefix << "└─R: ";
+					print_node(n->rs, prefix + "     ");
+				}
+			}
+		}
 		
 //		decision_tree(): RF(unusable_forest) {}
 		decision_tree(const random_forest &RF, vector<int> &Xid, int max_dep, int min_split_size):
@@ -802,6 +1035,136 @@ public:
 	};
 	decision_tree **tr;
 	//vector<decision_tree> tr;
+
+	void serialize(const std::string &fname) const {
+		std::ofstream out(fname, std::ios::binary);
+		out.write((char*)&d, sizeof(d));
+		out.write((char*)&n, sizeof(n));
+		out.write((char*)&C, sizeof(C));
+		out.write((char*)&T, sizeof(T));
+		out.write((char*)&k, sizeof(k));
+
+		// Serializar X_binary
+		for (int i = 0; i < d; ++i) {
+			bool val = X_binary[i];
+			out.write((char*)&val, sizeof(val));
+		}
+
+		for (int i = 0; i < n; ++i) {
+			if (X[i].empty()) {
+				for (int j = 0; j < d; ++j) {
+					double zero_val = 0.0;
+					out.write((char*)&zero_val, sizeof(zero_val));
+				}
+			} else {
+				for (int j = 0; j < d; ++j) {
+					out.write((char*)&X[i][j], sizeof(X[i][j]));
+				}
+			}
+		}
+
+		// Serializar labels Y
+		for (int i = 0; i < n; ++i) {
+			out.write((char*)&Y[i], sizeof(Y[i]));
+		}
+
+		// Serializar associações at
+		for (int i = 0; i < n; ++i) {
+			uint32_t at_size = static_cast<uint32_t>(at[i].size());
+			out.write((char*)&at_size, sizeof(at_size));
+			if (at_size > 0) {
+				out.write((char*)at[i].data(), at_size * sizeof(int));
+			}
+		}
+
+		// Serializar cada árvore
+		for (int i = 0; i < T; ++i) {
+			tr[i]->serialize(out);
+		}
+		out.close();
+	}
+	static random_forest* deserialize(const std::string &fname) {
+		std::ifstream in(fname, std::ios::binary);
+		if (!in.is_open()) {
+			cerr << "ERROR: Cannot open file " << fname << " for reading" << endl;
+			return nullptr;
+		}
+		
+		int d_local, n_local, C_local, T_local, k_local;
+		in.read((char*)&d_local, sizeof(d_local));
+		in.read((char*)&n_local, sizeof(n_local));
+		in.read((char*)&C_local, sizeof(C_local));
+		in.read((char*)&T_local, sizeof(T_local));
+		in.read((char*)&k_local, sizeof(k_local));
+		
+		// Verificar se os valores lidos são razoáveis
+		if (d_local <= 0 || n_local <= 0 || T_local <= 0 || k_local <= 0) {
+			cerr << "ERROR: Invalid parameters read from file: d=" << d_local 
+			     << ", n=" << n_local << ", T=" << T_local << ", k=" << k_local << endl;
+			return nullptr;
+		}
+
+		// Deserializar X_binary
+		vector<bool> X_binary_local(d_local);
+		for (int i = 0; i < d_local; ++i) {
+			bool val;
+			in.read((char*)&val, sizeof(val));
+			X_binary_local[i] = val;
+		}
+
+		vector<vector<double>> X_local(n_local, vector<double>(d_local));
+		for (int i = 0; i < n_local; ++i) {
+			for (int j = 0; j < d_local; ++j) {
+				in.read((char*)&X_local[i][j], sizeof(X_local[i][j]));
+			}
+		}
+
+		// Deserializar labels Y
+		vector<int> Y_local(n_local);
+		for (int i = 0; i < n_local; ++i) {
+			in.read((char*)&Y_local[i], sizeof(Y_local[i]));
+		}
+
+		random_forest* rf = new random_forest();
+		rf->d = d_local;
+		rf->n = n_local;
+		rf->C = C_local;
+		rf->T = T_local;
+		rf->k = k_local;
+		rf->X = X_local;
+		rf->Y = Y_local;
+		rf->X_binary = X_binary_local;
+
+		// Inicializar variáveis globais necessárias
+		id_T.resize(T_local);
+		for (int i = 0; i < T_local; ++i) id_T[i] = i;
+		
+		id_d.resize(d_local);
+		for (int i = 0; i < d_local; ++i) id_d[i] = i;
+
+		// Deserializar associações at
+		rf->at.resize(n_local);
+		for (int i = 0; i < n_local; ++i) {
+			uint32_t at_size;
+			in.read((char*)&at_size, sizeof(at_size));
+			// Adicionar validação para evitar valores inválidos
+			if (at_size > 0 && at_size <= T_local) {  // at_size não pode ser maior que T
+				rf->at[i].resize(at_size);
+				in.read((char*)rf->at[i].data(), at_size * sizeof(int));
+			} else if (at_size > T_local) {
+				cerr << "ERROR: Invalid at_size " << at_size << " for sample " << i 
+				     << " (max expected: " << T_local << ")" << endl;
+				rf->at[i].clear();  // Deixar vazio em caso de erro
+			}
+		}
+
+		rf->tr = new decision_tree*[T_local];
+		for (int i = 0; i < T_local; ++i) {
+			rf->tr[i] = decision_tree::deserialize(in, *rf);
+		}
+		in.close();
+		return rf;
+	}
 	
 	random_forest() {}
 	random_forest(vector<vector<Tx>> X, vector<Ty> Y, int T = 100, int k = 10, int max_dep = 15, int min_split_size = 10):
@@ -938,5 +1301,156 @@ public:
 		for (int t = 0; t < T; ++t) {
 			tr[t]->clean_up();
 		}
+	}
+
+	// Função para imprimir informações da floresta
+	void print_forest_info() const {
+		cout << "=== Random Forest Info ===" << endl;
+		cout << "Trees: " << T << ", Features: " << d << ", Samples: " << n 
+			 << ", Classes: " << C << ", k: " << k << endl;
+		cout << "==========================" << endl;
+	}
+
+	// Função para imprimir árvores específicas (útil para comparação)
+	void print_trees(const vector<int> &tree_indices) const {
+		for (int idx : tree_indices) {
+			if (idx >= 0 && idx < T) {
+				cout << "\n--- Tree " << idx << " ---" << endl;
+				tr[idx]->print_tree();
+			}
+		}
+	}
+
+	// Função para imprimir algumas árvores (primeiras n) de forma compacta
+	void print_first_trees(int n_trees = 3) const {
+		for (int i = 0; i < min(n_trees, T); ++i) {
+			cout << "\n--- Tree " << i << " (compact) ---" << endl;
+			if (tr[i]->root) {
+				tr[i]->print_node_compact(tr[i]->root, "  ", 0, 3); // Max depth 3 para compacidade
+			} else {
+				cout << "  Empty tree" << endl;
+			}
+		}
+	}
+
+	// Função para comparar duas florestas imprimindo as primeiras árvores
+	static void compare_forests(const random_forest &rf1, const random_forest &rf2, int n_trees = 2) {
+		cout << "\n========== FOREST COMPARISON ==========" << endl;
+		cout << "\nORIGINAL FOREST:" << endl;
+		rf1.print_forest_info();
+		rf1.print_first_trees(n_trees);
+		
+		cout << "\nDESERIALIZED FOREST:" << endl;
+		rf2.print_forest_info();
+		rf2.print_first_trees(n_trees);
+		cout << "\n=======================================" << endl;
+	}
+
+	// Função para verificar estruturalmente se duas árvores são idênticas
+	static bool trees_structurally_equal(decision_tree::node* n1, decision_tree::node* n2, int depth = 0) {
+		// Ambos são nulos
+		if (!n1 && !n2) return true;
+		
+		// Um é nulo, outro não
+		if (!n1 || !n2) return false;
+		
+		// Verificar se ambos são folhas ou ambos são nós internos
+		bool leaf1 = n1->leaf(), leaf2 = n2->leaf();
+		if (leaf1 != leaf2) return false;
+		
+		if (leaf1) {
+			// Para folhas, comparar apenas se têm dados válidos ou não
+			bool has_data1 = (n1->A.n > 0);
+			bool has_data2 = (n2->A.n > 0);
+			if (has_data1 && has_data2) {
+				// Ambas têm dados - comparar predição
+				double pred1 = (double)n1->A.n_1 / n1->A.n;
+				double pred2 = (double)n2->A.n_1 / n2->A.n;
+				return abs(pred1 - pred2) < 1e-6;
+			}
+			return has_data1 == has_data2; // Ambas vazias ou ambas com dados
+		} else {
+			// Para nós internos, comparar split
+			if (abs(n1->attr - n2->attr) > 1e-9) return false;
+			if (abs(n1->thres - n2->thres) > 1e-6) return false;
+			
+			// Recursão nos filhos
+			return trees_structurally_equal(n1->ls, n2->ls, depth + 1) &&
+				   trees_structurally_equal(n1->rs, n2->rs, depth + 1);
+		}
+	}
+
+	// Função melhorada para comparação visual das florestas
+	static void verify_forests_integrity(const random_forest &rf1, const random_forest &rf2, int n_trees = 5) {
+		cout << "\n========== FOREST INTEGRITY CHECK ==========" << endl;
+		
+		// Comparar metadados básicos
+		cout << "Basic Metadata:" << endl;
+		cout << "   Trees (tamanho): " << rf1.T << " vs " << rf2.T;
+		if (rf1.T == rf2.T) cout << " OK"; else cout << " FAIL";
+		cout << endl;
+		
+		cout << "   Features (tamanho): " << rf1.X[0].size() << " vs " << rf2.X[0].size();
+		if (rf1.X[0].size() == rf2.X[0].size()) cout << " OK"; else cout << " FAIL";
+		cout << endl;
+		
+		cout << "   Samples (tamanho): " << rf1.X.size() << " vs " << rf2.X.size();
+		if (rf1.X.size() == rf2.X.size()) cout << " OK"; else cout << " FAIL";
+		cout << endl;
+		
+		cout << "   k parameter: " << rf1.k << " vs " << rf2.k;
+		if (rf1.k == rf2.k) cout << " OK"; else cout << " FAIL";
+		cout << endl;
+		
+		// Verificar se as estruturas das primeiras árvores são idênticas
+		cout << "\nTree Structure Verification:" << endl;
+		int trees_to_check = min(n_trees, (int)rf1.T);
+		int identical_trees = 0;
+		
+		for (int i = 0; i < trees_to_check; i++) {
+			bool is_identical = trees_structurally_equal(rf1.tr[i]->root, rf2.tr[i]->root);
+			cout << "   Tree " << i << ": ";
+			if (is_identical) {
+				cout << "IDENTICAL";
+				identical_trees++;
+			} else {
+				cout << "DIFFERENT";
+			}
+			cout << endl;
+		}
+		
+		cout << "   Summary: " << identical_trees << "/" << trees_to_check << " trees are identical" << endl;
+		
+		// Teste de consistência de predições
+		cout << "\nPrediction Consistency Test:" << endl;
+		int test_samples = min(5, (int)rf1.X.size());
+		int consistent_predictions = 0;
+		
+		for (int i = 0; i < test_samples; i++) {
+			double pred1 = 0.0, pred2 = 0.0;
+			
+			// Calcular predição para rf1
+			for (int t = 0; t < rf1.T; t++) {
+				pred1 += rf1.tr[t]->qry(rf1.X[i]);
+			}
+			pred1 /= rf1.T;
+			
+			// Calcular predição para rf2
+			for (int t = 0; t < rf2.T; t++) {
+				pred2 += rf2.tr[t]->qry(rf2.X[i]);
+			}
+			pred2 /= rf2.T;
+			
+			bool consistent = abs(pred1 - pred2) < 1e-6;
+			if (consistent) consistent_predictions++;
+			
+			cout << "   Sample " << i << ": " << fixed << setprecision(6) 
+				 << pred1 << " vs " << pred2;
+			if (consistent) cout << " OK"; else cout << " FAIL";
+			cout << endl;
+		}
+		
+		cout << "   Summary: " << consistent_predictions << "/" << test_samples << " predictions are consistent" << endl;
+		cout << "\n===============================================" << endl;
 	}
 };
