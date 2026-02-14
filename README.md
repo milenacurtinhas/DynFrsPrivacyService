@@ -69,15 +69,6 @@ DynFrsPrivacyService/
 
 ---
 
-## Datasets
-
-### Adult Income
-- **Amostras**: 32,561 (treino) + 16,281 (teste)
-- **Features**: 107 (após one-hot encoding)
-- **Classes**: 2 (<=50K, >50K)
-
----
-
 ## Comandos Docker
 
 ```bash
