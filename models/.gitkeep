@@ -1,0 +1,60 @@
+# Models Directory
+
+Este diretório armazena modelos serializados do DynFrs.
+
+## Estrutura
+
+```
+models/
+├── model_<id>.bin           # Modelo binário serializado (C++)
+├── model_<id>_metadata.json # Metadados (Python JSON)
+└── .gitkeep                 # Manter diretório no git
+```
+
+## Formato
+
+### Arquivo Binário (.bin)
+- Serialização C++ do random_forest
+- Contém todas as árvores e estruturas de dados
+- Pode ser carregado via `deserialize()`
+
+### Metadata JSON
+```json
+{
+  "model_id": "a3f8e2c1",
+  "dataset_name": "Adult",
+  "created_at": "2026-02-14T10:35:22",
+  "last_modified": "2026-02-14T11:20:45",
+  "config": {
+    "num_trees": 100,
+    "max_depth": 15,
+    "min_split_size": 10,
+    "k": 10
+  },
+  "unlearn_operations": [
+    {
+      "operation_id": "b7c4d9e2",
+      "timestamp": "2026-02-14T11:20:45",
+      "samples_removed": 4,
+      "reason": "LGPD Art. 18"
+    }
+  ]
+}
+```
+
+## Persistência
+
+Modelos são automaticamente salvos após:
+- Treinamento inicial
+- Operações de unlearning
+- Chamada explícita a `/model/save`
+
+## Uso
+
+```bash
+# Salvar modelo
+curl -X POST "http://localhost:8000/model/save?filename=my_model.bin"
+
+# Carregar modelo
+curl -X POST "http://localhost:8000/model/load?filename=my_model.bin"
+```
