@@ -132,7 +132,7 @@ Acurácia Ataque (PÓS):   50.81%
 **Interpretação dos resultados:**
 - **Acurácia do Modelo**: Deve se manter alta (~80%) após unlearning
 - **Acurácia do Ataque**: Deve estar próxima de 50% (equivalente a chance aleatória)
-- Se ataque ~50% = **Privacidade preservada** ✅
+- Se ataque ~50% = **Privacidade preservada**
 
 ---
 
