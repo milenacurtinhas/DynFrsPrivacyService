@@ -44,6 +44,9 @@ class TrainRequest(BaseModel):
 class UnlearnRequest(BaseModel):
     unlearn_count: int = Field(..., ge=1, le=10000, description="Número de amostras a desaprender")
 
+class PredictRequest(BaseModel):
+    data: List[List[float]] = Field(..., description="Dados para predição (batch de amostras)")
+
 class AttackRequest(BaseModel):
     dataset: str = Field("Adult", description="Nome do dataset (Adult, Vaccine, NoShow)")
     sample_size: int = Field(5000, ge=100, le=10000, description="Tamanho da amostra para o ataque")
@@ -198,6 +201,35 @@ async def unlearn(request: UnlearnRequest):
         logger.error(f"Erro no unlearning: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/model/predict")
+async def predict(request: PredictRequest):
+    """
+    Realiza predições em batch para um conjunto de amostras
+    
+    - Recebe lista de features
+    - Retorna probabilidades para cada classe
+    """
+    try:
+        if not model_manager.is_loaded():
+            raise HTTPException(status_code=400, detail="Nenhum modelo carregado")
+        
+        logger.info(f"Predição em batch: {len(request.data)} amostras")
+        
+        # Converter para numpy array
+        X = np.array(request.data)
+        
+        # Realizar predição
+        probabilities = model_manager.predict_batch(X)
+        
+        return {
+            "status": "success",
+            "probabilities": probabilities.tolist()
+        }
+        
+    except Exception as e:
+        logger.error(f"Erro na predição: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/attack/inference")
 async def membership_inference_attack(request: AttackRequest):
     """
@@ -214,10 +246,11 @@ async def membership_inference_attack(request: AttackRequest):
         
         logger.info(f"Iniciando ataque de inferência: dataset={request.dataset}")
         
-        # Criar instância do ataque
+        # Criar instância do ataque with model_manager to avoid HTTP deadlock
         attack = MembershipInferenceAttack(
             dataset_name=request.dataset,
-            base_url="http://localhost:8000"
+            base_url="http://localhost:8000",
+            model_manager=model_manager  # Use direct access instead of HTTP
         )
         
         # Carregar dados
@@ -226,24 +259,33 @@ async def membership_inference_attack(request: AttackRequest):
         # Inicializar modelo
         attack.initialize_model()
         
+        # Obter acurácia do modelo PRÉ-unlearning
+        model_metrics_pre = model_manager.evaluate()
+        model_accuracy_pre = model_metrics_pre["accuracy"]
+        
         # Executar ataque pré-unlearning
         X_attack_pre = attack.get_attack_features()
         attack.attacker_model.fit(X_attack_pre, attack.y_attack)
         predict_pre = attack.attacker_model.predict(X_attack_pre)
         from sklearn.metrics import accuracy_score
-        accuracy_pre = accuracy_score(attack.y_attack, predict_pre)
+        attack_accuracy_pre = accuracy_score(attack.y_attack, predict_pre)
         
         # Executar unlearning
         attack.execute_unlearning(count=request.unlearn_count)
         
+        # Obter acurácia do modelo PÓS-unlearning
+        model_metrics_pos = model_manager.evaluate()
+        model_accuracy_pos = model_metrics_pos["accuracy"]
+        
         # Executar ataque pós-unlearning
         X_attack_pos = attack.get_attack_features()
         predict_pos = attack.attacker_model.predict(X_attack_pos)
-        accuracy_pos = accuracy_score(attack.y_attack, predict_pos)
+        attack_accuracy_pos = accuracy_score(attack.y_attack, predict_pos)
         
-        # Calcular diferença
-        accuracy_diff = accuracy_pre - accuracy_pos
-        privacy_improvement = ((accuracy_diff) / accuracy_pre) * 100 if accuracy_pre > 0 else 0
+        # Calcular diferenças
+        model_accuracy_diff = model_accuracy_pre - model_accuracy_pos
+        attack_accuracy_diff = attack_accuracy_pre - attack_accuracy_pos
+        privacy_improvement = ((attack_accuracy_diff) / attack_accuracy_pre) * 100 if attack_accuracy_pre > 0 else 0
         
         # Imprimir métricas no terminal
         print("\n" + "="*60)
@@ -251,20 +293,33 @@ async def membership_inference_attack(request: AttackRequest):
         print("="*60)
         print(f"Dataset: {request.dataset}")
         print(f"Amostras no ataque: {request.sample_size}")
-        print(f"Acurácia PRÉ-unlearning: {accuracy_pre * 100:.2f}%")
-        print(f"Acurácia PÓS-unlearning: {accuracy_pos * 100:.2f}%")
-        print(f"Diferença: {accuracy_diff * 100:.2f}%")
-        print(f"Melhoria de privacidade: {privacy_improvement:.2f}%")
+        print(f"Amostras removidas: {request.unlearn_count}")
+        print("-"*60)
+        print("ACURÁCIA DO MODELO:")
+        print(f"  PRÉ-unlearning:  {model_accuracy_pre * 100:.2f}%")
+        print(f"  PÓS-unlearning:  {model_accuracy_pos * 100:.2f}%")
+        print(f"  Diferença:       {model_accuracy_diff * 100:.2f}%")
+        print("-"*60)
+        print("ACURÁCIA DO ATAQUE:")
+        print(f"  PRÉ-unlearning:  {attack_accuracy_pre * 100:.2f}%")
+        print(f"  PÓS-unlearning:  {attack_accuracy_pos * 100:.2f}%")
+        print(f"  Diferença:       {attack_accuracy_diff * 100:.2f}%")
+        print(f"  Melhoria privacidade: {privacy_improvement:.2f}%")
         print("="*60 + "\n")
         
-        logger.info(f"Ataque concluído: accuracy_pre={accuracy_pre:.4f}, accuracy_pos={accuracy_pos:.4f}")
+        logger.info(f"Ataque concluído: model_acc_pre={model_accuracy_pre:.4f}, attack_acc_pre={attack_accuracy_pre:.4f}")
         
         return {
             "status": "success",
-            "metrics": {
-                "accuracy_pre_unlearning": accuracy_pre,
-                "accuracy_post_unlearning": accuracy_pos,
-                "accuracy_difference": accuracy_diff,
+            "model_metrics": {
+                "accuracy_pre_unlearning": model_accuracy_pre,
+                "accuracy_post_unlearning": model_accuracy_pos,
+                "accuracy_difference": model_accuracy_diff
+            },
+            "attack_metrics": {
+                "accuracy_pre_unlearning": attack_accuracy_pre,
+                "accuracy_post_unlearning": attack_accuracy_pos,
+                "accuracy_difference": attack_accuracy_diff,
                 "privacy_improvement_pct": privacy_improvement
             },
             "attack_params": {

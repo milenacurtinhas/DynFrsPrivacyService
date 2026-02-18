@@ -12,9 +12,10 @@ class MembershipInferenceAttack():
     """
     Experimento de Inferência de Membro (MIA)
     """
-    def __init__(self, dataset_name="Adult", base_url="http://localhost:8000"):
+    def __init__(self, dataset_name="Adult", base_url="http://localhost:8000", model_manager=None):
         self.dataset_name = dataset_name
         self.base_url = base_url
+        self.model_manager = model_manager  # If provided, use directly instead of HTTP
         self.attacker_model = LogisticRegression(random_state = 42)
 
         self.X_members = None
@@ -76,51 +77,62 @@ class MembershipInferenceAttack():
     
     def initialize_model(self):
         """Faz o health check e ordena o treinamento do modelo alvo no servidor"""
-        self._communicate_api("GET", "/health")
+        if self.model_manager:
+            # Use model_manager directly (API internal mode)
+            self.model_manager.train(
+                dataset_name=self.dataset_name,
+                num_trees=100,
+                max_depth=15,
+                min_split_size=10,
+                k=10
+            )
+            logger.info("Modelo inicializado e treinado diretamente.")
+        else:
+            # Use HTTP API (external mode)
+            self._communicate_api("GET", "/health")
 
-        payload_train = {
-            "dataset": self.dataset_name,
-            "num_trees": 100,
-            "max_depth": 15,
-            "min_split_size": 10,
-            "k": 10
-        }
+            payload_train = {
+                "dataset": self.dataset_name,
+                "num_trees": 100,
+                "max_depth": 15,
+                "min_split_size": 10,
+                "k": 10
+            }
 
-        self._communicate_api("POST", "/model/train", payload_train)
-        logger.info("Modelo inicializado e treinado no servidor.")
+            self._communicate_api("POST", "/model/train", payload_train)
+            logger.info("Modelo inicializado e treinado no servidor.")
 
     def get_attack_features(self):
         """Recebe as probabilidades da API para formar o dataset do atacante"""
+        if self.model_manager:
+            # Use model_manager directly (API internal mode)
+            probs_members = self.model_manager.predict_batch(self.X_members)
+            probs_non_members = self.model_manager.predict_batch(self.X_non_members)
+            X_attack = np.vstack((probs_members, probs_non_members))
+        else:
+            # Use HTTP API (external mode)
+            resp_members = self._communicate_api("POST", "/model/predict", {"data" : self.X_members.tolist()})
+            resp_non_members = self._communicate_api("POST", "/model/predict", {"data" : self.X_non_members.tolist()})
 
-        # Precisa implementar um endpoint"model/predict" e uma chamada para "data" na main.py, exemplo:
-        # class PredictRequest(BaseModel):
-        #     data: List[List[float]] = Field.......
-
-        # @app.post("/model/predict")
-        # async def predict(request: PredictRequest):
-        #     probs = model_manager.predict_batch(np.array(request.data))
-        #     .....
-        #     return {
-        #         "status": "success",
-        #         "probabilities": probs.tolist()
-        #     }
-        
-        resp_members = self._communicate_api("POST", "/model/predict", {"data" : self.X_members.tolist()})
-        resp_non_members = self._communicate_api("POST", "/model/predict", {"data" : self.X_non_members.tolist()})
-
-        # Concatena as saídas da API em uma matriz única
-        # O atacante vai usar somente as distribuições de probabilidade para aprender a separar as classes
-        X_attack = np.vstack((resp_members['probabilities'], resp_non_members['probabilities']))
+            # Concatena as saídas da API em uma matriz única
+            # O atacante vai usar somente as distribuições de probabilidade para aprender a separar as classes
+            X_attack = np.vstack((resp_members['probabilities'], resp_non_members['probabilities']))
         return X_attack
 
     def execute_unlearning(self, count=500):
         """Solicita ao servidor a remoção de N amostras do modelo"""
-        payload_unlearn = {
-            "unlearn_count": count
-        }
+        if self.model_manager:
+            # Use model_manager directly (API internal mode)
+            self.model_manager.unlearn_random(unlearn_count=count)
+            logger.info(f"Modelo atualizado após unlearning de {count} amostras")
+        else:
+            # Use HTTP API (external mode)
+            payload_unlearn = {
+                "unlearn_count": count
+            }
 
-        self._communicate_api("POST", "/model/unlearn", payload_unlearn)
-        logger.info(f"Modelo atualizado após unlearning de {count} amostras")
+            self._communicate_api("POST", "/model/unlearn", payload_unlearn)
+            logger.info(f"Modelo atualizado após unlearning de {count} amostras")
 
     def run(self):
         """Orquestra a execução completa do experimento do ataque"""
