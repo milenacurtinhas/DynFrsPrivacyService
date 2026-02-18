@@ -20,6 +20,9 @@ chmod +x deploy.sh
 
 # Ou testar ataque de inferência
 ./test_attack.sh
+
+# Ou testar todos os datasets (Adult, Vaccine, NoShow)
+./test_all_datasets.sh
 ```
 
 ### 3. Acesso
@@ -59,27 +62,6 @@ curl -X POST http://localhost:8000/attack/inference \
 
 ---
 
-## Estrutura do Projeto
-
-```
-DynFrsPrivacyService/
-├── api/                  # API REST (FastAPI)
-│   ├── main.py           # Endpoints
-│   ├── model_manager.py  # Gerenciador de modelos
-│   └── script_ataque_inferencia.py  # Ataque de inferência
-│
-├── Datasets/             # Datasets
-│   ├── Adult/            
-│   ├── Vaccine/
-│   └── NoShow/
-│
-├── DynFrs.h              # Código C++ original
-├── main_serializada.cpp  # Implementação DynFrs
-└── docker-compose.yml    # Orquestração
-```
-
----
-
 ## Ataque de Inferência de Membro (MIA)
 
 O serviço inclui um endpoint para testar a vulnerabilidade do modelo contra ataques de inferência de membro. Este ataque tenta determinar se uma amostra específica foi usada no treinamento do modelo.
@@ -108,9 +90,11 @@ response = requests.post(
 )
 
 result = response.json()
-print(f"Acurácia pré-unlearning: {result['metrics']['accuracy_pre_unlearning']:.2%}")
-print(f"Acurácia pós-unlearning: {result['metrics']['accuracy_post_unlearning']:.2%}")
-print(f"Melhoria de privacidade: {result['metrics']['privacy_improvement_pct']:.2f}%")
+print(f"Acurácia modelo PRÉ: {result['model_metrics']['accuracy_pre_unlearning']:.2%}")
+print(f"Acurácia modelo PÓS: {result['model_metrics']['accuracy_post_unlearning']:.2%}")
+print(f"Acurácia ataque PRÉ: {result['attack_metrics']['accuracy_pre_unlearning']:.2%}")
+print(f"Acurácia ataque PÓS: {result['attack_metrics']['accuracy_post_unlearning']:.2%}")
+print(f"Melhoria de privacidade: {result['attack_metrics']['privacy_improvement_pct']:.2f}%")
 ```
 
 ### Executar script standalone
@@ -118,6 +102,37 @@ print(f"Melhoria de privacidade: {result['metrics']['privacy_improvement_pct']:.
 ```bash
 python script_ataque_inferencia.py
 ```
+
+### Testar todos os datasets
+
+Execute o ataque de inferência para todos os datasets (Adult, Vaccine, NoShow) automaticamente:
+
+```bash
+./test_all_datasets.sh
+```
+
+Este script irá:
+- Executar o ataque de inferência para cada dataset
+- Coletar as métricas de acurácia do modelo e do ataque (PRÉ e PÓS unlearning)
+- Salvar os resultados em um arquivo `results_YYYYMMDD_HHMMSS.txt`
+- Exibir um resumo formatado no terminal
+
+**Exemplo de saída:**
+
+```
+
+DATASET: Adult
+
+Acurácia Modelo (PRÉ):   86.35%
+Acurácia Modelo (PÓS):   86.49%
+Acurácia Ataque (PRÉ):   50.69%
+Acurácia Ataque (PÓS):   50.81%
+```
+
+**Interpretação dos resultados:**
+- **Acurácia do Modelo**: Deve se manter alta (~80%) após unlearning
+- **Acurácia do Ataque**: Deve estar próxima de 50% (equivalente a chance aleatória)
+- Se ataque ~50% = **Privacidade preservada** ✅
 
 ---
 
@@ -179,8 +194,9 @@ print(f"Status: {r.json()['status']}")
 # 3. Ataque de Inferência
 r = requests.post(f"{BASE}/attack/inference",
     json={"dataset": "Adult", "sample_size": 5000, "unlearn_count": 500})
-print(f"Acurácia pré: {r.json()['metrics']['accuracy_pre_unlearning']:.2%}")
-print(f"Acurácia pós: {r.json()['metrics']['accuracy_post_unlearning']:.2%}")
+print(f"Acurácia modelo PRÉ: {r.json()['model_metrics']['accuracy_pre_unlearning']:.2%}")
+print(f"Acurácia ataque PRÉ: {r.json()['attack_metrics']['accuracy_pre_unlearning']:.2%}")
+print(f"Acurácia ataque PÓS: {r.json()['attack_metrics']['accuracy_post_unlearning']:.2%}")
 
 ```
 
