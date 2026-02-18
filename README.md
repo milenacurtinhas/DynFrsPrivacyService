@@ -17,6 +17,9 @@ chmod +x deploy.sh
 ### 2. Teste
 ```bash
 ./test_api.sh
+
+# Ou testar ataque de inferência
+./test_attack.sh
 ```
 
 ### 3. Acesso
@@ -45,6 +48,75 @@ curl -X POST http://localhost:8000/model/train \
 curl -X POST http://localhost:8000/model/unlearn \
   -H "Content-Type: application/json" \
   -d '{"unlearn_count": 100}'
+```
+
+### Ataque de Inferência de Membro
+```bash
+curl -X POST http://localhost:8000/attack/inference \
+  -H "Content-Type: application/json" \
+  -d '{"dataset": "Adult", "sample_size": 5000, "unlearn_count": 500}'
+```
+
+---
+
+## Estrutura do Projeto
+
+```
+DynFrsPrivacyService/
+├── api/                  # API REST (FastAPI)
+│   ├── main.py           # Endpoints
+│   ├── model_manager.py  # Gerenciador de modelos
+│   └── script_ataque_inferencia.py  # Ataque de inferência
+│
+├── Datasets/             # Datasets
+│   ├── Adult/            
+│   ├── Vaccine/
+│   └── NoShow/
+│
+├── DynFrs.h              # Código C++ original
+├── main_serializada.cpp  # Implementação DynFrs
+└── docker-compose.yml    # Orquestração
+```
+
+---
+
+## Ataque de Inferência de Membro (MIA)
+
+O serviço inclui um endpoint para testar a vulnerabilidade do modelo contra ataques de inferência de membro. Este ataque tenta determinar se uma amostra específica foi usada no treinamento do modelo.
+
+### Como funciona o ataque
+
+1. **Preparação**: Carrega dados de membros (treino) e não-membros (teste)
+2. **Treino**: Inicializa e treina o modelo alvo
+3. **Coleta**: Obtém probabilidades de predição para ambos os grupos
+4. **Ataque Pré-Unlearning**: Treina um classificador para distinguir membros de não-membros
+5. **Unlearning**: Remove amostras do modelo
+6. **Ataque Pós-Unlearning**: Reavalia a acurácia do ataque
+
+### Exemplo de uso via API
+
+```python
+import requests
+
+response = requests.post(
+    "http://localhost:8000/attack/inference",
+    json={
+        "dataset": "Adult",
+        "sample_size": 5000,
+        "unlearn_count": 500
+    }
+)
+
+result = response.json()
+print(f"Acurácia pré-unlearning: {result['metrics']['accuracy_pre_unlearning']:.2%}")
+print(f"Acurácia pós-unlearning: {result['metrics']['accuracy_post_unlearning']:.2%}")
+print(f"Melhoria de privacidade: {result['metrics']['privacy_improvement_pct']:.2f}%")
+```
+
+### Executar script standalone
+
+```bash
+python script_ataque_inferencia.py
 ```
 
 ---
@@ -103,6 +175,12 @@ print(f"Model ID: {r.json()['model_id']}")
 r = requests.post(f"{BASE}/model/unlearn",
     json={"unlearn_count": 100})
 print(f"Status: {r.json()['status']}")
+
+# 3. Ataque de Inferência
+r = requests.post(f"{BASE}/attack/inference",
+    json={"dataset": "Adult", "sample_size": 5000, "unlearn_count": 500})
+print(f"Acurácia pré: {r.json()['metrics']['accuracy_pre_unlearning']:.2%}")
+print(f"Acurácia pós: {r.json()['metrics']['accuracy_post_unlearning']:.2%}")
 
 ```
 

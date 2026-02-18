@@ -44,6 +44,11 @@ class TrainRequest(BaseModel):
 class UnlearnRequest(BaseModel):
     unlearn_count: int = Field(..., ge=1, le=10000, description="Número de amostras a desaprender")
 
+class AttackRequest(BaseModel):
+    dataset: str = Field("Adult", description="Nome do dataset (Adult, Vaccine, NoShow)")
+    sample_size: int = Field(5000, ge=100, le=10000, description="Tamanho da amostra para o ataque")
+    unlearn_count: int = Field(500, ge=1, le=5000, description="Número de amostras para unlearning")
+
 class ModelInfo(BaseModel):
     model_id: str
     dataset: str
@@ -191,6 +196,87 @@ async def unlearn(request: UnlearnRequest):
         
     except Exception as e:
         logger.error(f"Erro no unlearning: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/attack/inference")
+async def membership_inference_attack(request: AttackRequest):
+    """
+    Executa um ataque de inferência de membro (MIA)
+    
+    - Treina modelo alvo
+    - Executa ataque antes do unlearning
+    - Realiza unlearning
+    - Executa ataque após unlearning
+    - Retorna métricas de acurácia do ataque
+    """
+    try:
+        from script_ataque_inferencia import MembershipInferenceAttack
+        
+        logger.info(f"Iniciando ataque de inferência: dataset={request.dataset}")
+        
+        # Criar instância do ataque
+        attack = MembershipInferenceAttack(
+            dataset_name=request.dataset,
+            base_url="http://localhost:8000"
+        )
+        
+        # Carregar dados
+        attack.load_data(sample_size=request.sample_size)
+        
+        # Inicializar modelo
+        attack.initialize_model()
+        
+        # Executar ataque pré-unlearning
+        X_attack_pre = attack.get_attack_features()
+        attack.attacker_model.fit(X_attack_pre, attack.y_attack)
+        predict_pre = attack.attacker_model.predict(X_attack_pre)
+        from sklearn.metrics import accuracy_score
+        accuracy_pre = accuracy_score(attack.y_attack, predict_pre)
+        
+        # Executar unlearning
+        attack.execute_unlearning(count=request.unlearn_count)
+        
+        # Executar ataque pós-unlearning
+        X_attack_pos = attack.get_attack_features()
+        predict_pos = attack.attacker_model.predict(X_attack_pos)
+        accuracy_pos = accuracy_score(attack.y_attack, predict_pos)
+        
+        # Calcular diferença
+        accuracy_diff = accuracy_pre - accuracy_pos
+        privacy_improvement = ((accuracy_diff) / accuracy_pre) * 100 if accuracy_pre > 0 else 0
+        
+        # Imprimir métricas no terminal
+        print("\n" + "="*60)
+        print("ATAQUE DE INFERÊNCIA DE MEMBRO")
+        print("="*60)
+        print(f"Dataset: {request.dataset}")
+        print(f"Amostras no ataque: {request.sample_size}")
+        print(f"Acurácia PRÉ-unlearning: {accuracy_pre * 100:.2f}%")
+        print(f"Acurácia PÓS-unlearning: {accuracy_pos * 100:.2f}%")
+        print(f"Diferença: {accuracy_diff * 100:.2f}%")
+        print(f"Melhoria de privacidade: {privacy_improvement:.2f}%")
+        print("="*60 + "\n")
+        
+        logger.info(f"Ataque concluído: accuracy_pre={accuracy_pre:.4f}, accuracy_pos={accuracy_pos:.4f}")
+        
+        return {
+            "status": "success",
+            "metrics": {
+                "accuracy_pre_unlearning": accuracy_pre,
+                "accuracy_post_unlearning": accuracy_pos,
+                "accuracy_difference": accuracy_diff,
+                "privacy_improvement_pct": privacy_improvement
+            },
+            "attack_params": {
+                "dataset": request.dataset,
+                "sample_size": request.sample_size,
+                "unlearn_count": request.unlearn_count
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Erro no ataque de inferência: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
